@@ -4,6 +4,9 @@ Written by Martin v. Löwis.
 """
 
 import codecs
+from typing import Callable
+from pydantic import BaseModel
+from pydantic.dataclasses import dataclass
 
 ##################### Encoding #####################################
 
@@ -193,45 +196,95 @@ def punycode_decode(text, errors):
         extended = str(text[pos+1:], "ascii").upper()
     return insertion_sort(base, extended, errors)
 
-### Codec APIs
-
-class Codec(codecs.Codec):
-
-    def encode(self, input, errors='strict'):
-        res = punycode_encode(input)
-        return res, len(input)
-
-    def decode(self, input, errors='strict'):
-        if errors not in ('strict', 'replace', 'ignore'):
-            raise UnicodeError("Unsupported error handling "+errors)
-        res = punycode_decode(input, errors)
-        return res, len(input)
-
-class IncrementalEncoder(codecs.IncrementalEncoder):
-    def encode(self, input, final=False):
-        return punycode_encode(input)
-
-class IncrementalDecoder(codecs.IncrementalDecoder):
-    def decode(self, input, final=False):
-        if self.errors not in ('strict', 'replace', 'ignore'):
-            raise UnicodeError("Unsupported error handling "+self.errors)
-        return punycode_decode(input, self.errors)
-
-class StreamWriter(Codec,codecs.StreamWriter):
-    pass
-
-class StreamReader(Codec,codecs.StreamReader):
-    pass
-
 ### encodings module API
+def _is_basic(char: str) -> bool:
+    return ord(char) < 0x80
 
-def getregentry():
-    return codecs.CodecInfo(
-        name='punycode',
+@dataclass
+class BootStringCodec:
+    name: str
+    is_basic: Callable[[str], bool] = _is_basic
+    digits: list[str] | str = digits
+    delimiter: str = '-'
+    initial_bias: int = 72
+    initial_n: int = 0x80
+    tmin: int = 1
+    tmax: int = 26
+    skew: int = 38
+    damp: int = 700
+
+    def __post_init_post_parse__(self):
+        # sanity checks
+        try:
+            codecs.lookup(name)
+        except LookupError:
+            pass
+        else:
+            assert False
+        base = len(digits)
+        assert 0 <= tmin <= tmax <= base-1
+        assert skew >= 1
+        assert damp >= 2
+        assert initial_bias % base <= base - tmin
+        assert delimiter not in digits
+        assert all(map(is_basic, digits))
+        assert is_basic(delimiter)
+
+        codecs.register(self.search_function)
+
+    def search_function(self, codec_name):
+        if codec_name != self.name:
+            return None
+        return codecs.CodecInfo(
+            name=self.name,
+            encode=Codec().encode,
+            decode=Codec().decode,
+            incrementalencoder=IncrementalEncoder,
+            incrementaldecoder=IncrementalDecoder,
+            streamwriter=StreamWriter,
+            streamreader=StreamReader,
+        )
+
+
+def build():
+    ### Codec APIs
+
+    class Codec(codecs.Codec):
+
+        def encode(self, input, errors='strict'):
+            res = punycode_encode(input)
+            return res, len(input)
+
+        def decode(self, input, errors='strict'):
+            if errors not in ('strict', 'replace', 'ignore'):
+                raise UnicodeError("Unsupported error handling "+errors)
+            res = punycode_decode(input, errors)
+            return res, len(input)
+
+    class IncrementalEncoder(codecs.IncrementalEncoder):
+        def encode(self, input, final=False):
+            return punycode_encode(input)
+
+    class IncrementalDecoder(codecs.IncrementalDecoder):
+        def decode(self, input, final=False):
+            if self.errors not in ('strict', 'replace', 'ignore'):
+                raise UnicodeError("Unsupported error handling "+self.errors)
+            return punycode_decode(input, self.errors)
+
+    class StreamWriter(Codec,codecs.StreamWriter):
+        pass
+
+    class StreamReader(Codec,codecs.StreamReader):
+        pass
+
+    
+    codecs.register(lambda: codecs.CodecInfo(
+        name=name,
         encode=Codec().encode,
         decode=Codec().decode,
         incrementalencoder=IncrementalEncoder,
         incrementaldecoder=IncrementalDecoder,
         streamwriter=StreamWriter,
         streamreader=StreamReader,
-    )
+    ))
+
