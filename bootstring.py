@@ -3,32 +3,34 @@
 Written by Martin v. Löwis.
 """
 
-import codecs
-from typing import Callable
+from typing import Callable, Self, Sequence
 from pydantic import BaseModel
 from pydantic.dataclasses import dataclass
+from itertools import groupby
+
+Predicate = Callable[[str], bool]
+Char = str # but like, a single character
+CharList = Sequence[Char]
 
 ##################### Encoding #####################################
 
-def segregate(str):
+def segregate(s: str, is_basic: Predicate) -> tuple[bytes, CharList]:
     """3.1 Basic code point segregation"""
-    base = bytearray()
-    extended = set()
-    for c in str:
-        if ord(c) < 128:
-            base.append(ord(c))
-        else:
-            extended.add(c)
-    extended = sorted(extended)
-    return bytes(base), extended
 
-def selective_len(str, max):
+    select = { True: str, False: set }
+
+    for group, it in groupby(is_basic, s):
+        select[group] = select[group](it)
+
+    base = bytes(map(ord, select[True]))
+    extended = sorted(select[False])
+
+    return base, extended
+
+def selective_len(s: str, is_basic: Predicate):
     """Return the length of str, considering only characters below max."""
-    res = 0
-    for c in str:
-        if ord(c) < max:
-            res += 1
-    return res
+
+    return len(filter(is_basic, s))
 
 def selective_find(str, char, index, pos):
     """Return a pair (index, pos), indicating the next occurrence of
@@ -77,7 +79,6 @@ def T(j, bias):
     if res > 26: return 26
     return res
 
-digits = b"abcdefghijklmnopqrstuvwxyz0123456789"
 def generate_generalized_integer(N, bias):
     """3.3 Generalized variable-length integers"""
     result = bytearray()
@@ -156,6 +157,28 @@ def decode_generalized_number(extended, extpos, bias, errors):
         w = w * (36 - t)
         j += 1
 
+def decoding_procedure(*argv):
+    if not all(map(self.is_basic, s)):
+        raise OhNo("Not all is basic")
+
+    bias = self.initial_bias
+    n = self.initial_n
+    i = 0
+    base, _, extended = s.rpartition(self.delimiter)
+    for c in extended:
+        oldi = i
+        w = 1
+        for k in range(self.base, None, self.base):
+            digit = ord(c)
+            i += w * digit
+            t = min(self.tmax, max(self.tmin, k))
+            if digit < t:
+                break
+            w *= self.base - t
+            if w > infinity:
+                raise OhNo("Fail on overflow")
+        bias = adapt(i - oldi, len(output + 1), oldi == 0)
+
 
 def insertion_sort(base, extended, errors):
     """3.2 Insertion unsort coding"""
@@ -199,6 +222,8 @@ def punycode_decode(text, errors):
 ### encodings module API
 def _is_basic(char: str) -> bool:
     return ord(char) < 0x80
+
+digits = b"abcdefghijklmnopqrstuvwxyz0123456789"
 
 @dataclass
 class BootStringCodec:
