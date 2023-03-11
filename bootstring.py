@@ -202,8 +202,8 @@ def _is_basic(char: str) -> bool:
 
 @dataclass
 class BootStringCodec:
-    name: str
-    is_basic: Callable[[str], bool] = _is_basic
+    is_basic: Predicate = _is_basic
+    is_case_sensetive: bool = False
     digits: list[str] | str = digits
     delimiter: str = '-'
     initial_bias: int = 72
@@ -215,76 +215,71 @@ class BootStringCodec:
 
     def __post_init_post_parse__(self):
         # sanity checks
+        self.base = len(self.digits)
+        assert 0 <= self.tmin <= self.tmax <= self.base-1
+        assert self.skew >= 1
+        assert self.damp >= 2
+        assert self.initial_bias % self.base <= self.base - self.tmin
+        assert self.delimiter not in self.digits
+        # Though in practical applications it is expected, it is not a requirement
+        # assert all(map(self.is_basic, self.digits))
+        assert is_basic(self.delimiter)
+
+
+    def register(this, name: str) -> Self:
+        ### Codec APIs
+        import codecs
+
         try:
             codecs.lookup(name)
         except LookupError:
             pass
         else:
-            assert False
-        base = len(digits)
-        assert 0 <= tmin <= tmax <= base-1
-        assert skew >= 1
-        assert damp >= 2
-        assert initial_bias % base <= base - tmin
-        assert delimiter not in digits
-        assert all(map(is_basic, digits))
-        assert is_basic(delimiter)
+            raise RuntimeError("Codec with this name already registered: "+name)
 
-        codecs.register(self.search_function)
+        class Codec(codecs.Codec):
+            def encode(self input, errors='strict'):
+                res = this.encode(input)
+                return res, len(input)
 
-    def search_function(self, codec_name):
-        if codec_name != self.name:
-            return None
-        return codecs.CodecInfo(
-            name=self.name,
-            encode=Codec().encode,
-            decode=Codec().decode,
-            incrementalencoder=IncrementalEncoder,
-            incrementaldecoder=IncrementalDecoder,
-            streamwriter=StreamWriter,
-            streamreader=StreamReader,
-        )
+            def decode(self input, errors='strict'):
+                if errors not in ('strict', 'replace', 'ignore'):
+                    raise UnicodeError("Unsupported error handling "+errors)
+                res = this.decode(input, errors)
+                return res, len(input)
 
+        class IncrementalEncoder(codecs.IncrementalEncoder):
+            def encode(self input, final=False):
+                return this.encode(input)
 
-def build():
-    ### Codec APIs
+        class IncrementalDecoder(codecs.IncrementalDecoder):
+            def decode(self, input, final=False):
+                if self.errors not in ('strict', 'replace', 'ignore'):
+                    raise UnicodeError("Unsupported error handling "+self.errors)
+                return this.decode(input, self.errors)
 
-    class Codec(codecs.Codec):
+        class StreamWriter(Codec,codecs.StreamWriter):
+            pass
 
-        def encode(self, input, errors='strict'):
-            res = punycode_encode(input)
-            return res, len(input)
+        class StreamReader(Codec,codecs.StreamReader):
+            pass
 
-        def decode(self, input, errors='strict'):
-            if errors not in ('strict', 'replace', 'ignore'):
-                raise UnicodeError("Unsupported error handling "+errors)
-            res = punycode_decode(input, errors)
-            return res, len(input)
+        codec_info = codecs.CodecInfo(
+                name=this.name,
+                encode=Codec().encode,
+                decode=Codec().decode,
+                incrementalencoder=IncrementalEncoder,
+                incrementaldecoder=IncrementalDecoder,
+                streamwriter=StreamWriter,
+                streamreader=StreamReader,
+            )
 
-    class IncrementalEncoder(codecs.IncrementalEncoder):
-        def encode(self, input, final=False):
-            return punycode_encode(input)
+        @codecs.register
+        def search_function(codec_name: str) -> codecs.CodecInfo | None:
+            if codec_name != this.name:
+                return None
+            else:
+                return codec_info
 
-    class IncrementalDecoder(codecs.IncrementalDecoder):
-        def decode(self, input, final=False):
-            if self.errors not in ('strict', 'replace', 'ignore'):
-                raise UnicodeError("Unsupported error handling "+self.errors)
-            return punycode_decode(input, self.errors)
-
-    class StreamWriter(Codec,codecs.StreamWriter):
-        pass
-
-    class StreamReader(Codec,codecs.StreamReader):
-        pass
-
-    
-    codecs.register(lambda: codecs.CodecInfo(
-        name=name,
-        encode=Codec().encode,
-        decode=Codec().decode,
-        incrementalencoder=IncrementalEncoder,
-        incrementaldecoder=IncrementalDecoder,
-        streamwriter=StreamWriter,
-        streamreader=StreamReader,
-    ))
+        return this
 
